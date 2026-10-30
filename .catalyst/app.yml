@@ -8,7 +8,7 @@ schema: catalyst/app@1
 
 id: dog-log
 name: Dog Log
-repository: Tinnaz45/dog-log
+repository: catalyst-repo/dog-log
 
 # The declared branch model (CORE_RULES.md section 8.1.1 / 8.10). `main` is the sole
 # long-lived branch and is Production. No `dev` branch exists or is to be created.
