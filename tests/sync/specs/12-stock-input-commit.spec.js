@@ -164,11 +164,14 @@ test('50 a meal slot passing while Fridge is being edited does not turn the reco
   await expect.poll(() => g(a.page, () => cache.revision)).toBeGreaterThan(rev);
   const fed = await backend.pool.query("select slot from dog_log.meal_events where owner_id = $1 and origin = 'server' and outcome = 'fed' and slot_at > $2", [a.owner, cursor]);
   expect(fed.rows).toHaveLength(1); // one meal was deducted by the server
+  const dinner = fed.rows[0].slot === 'dinner';
+  const moved = await backend.pool.query("select freezer_to_fridge_count as n from dog_log.meal_events where owner_id = $1 and origin = 'server' and slot = 'transfer' and outcome = 'transferred' and slot_at > $2", [a.owner, cursor]);
+  // Dinner shares the 18:00 transfer time, so a due Dinner brings its transfer with it (WORK-287); Breakfast does not.
+  expect(moved.rows.map(r => r.n)).toEqual(dinner ? [2] : []);
   const fridgeNow = (await backend.state(a.owner)).doc.stock.fridge;
-  // The server changed Fridge: -1 for the meal, and +2 when the slot is Dinner and its 18:00 transfer runs (WORK-287).
-  expect(fridgeNow).not.toBe(5);
+  expect(fridgeNow).toBe(5 - 1 + (dinner ? 2 : 0)); // the server changed Fridge: -1 for the meal, +2 for the transfer
   await expect(a.page.locator('#fridgeVal')).toHaveValue('5'); // the focused field was not rewritten
-  const recount = 9; // differs from both the value on screen (5) and the post-meal value (<5), whatever the time of day
+  const recount = 9; // differs from both the value on screen (5) and the post-meal value (4 or 6), whatever the time of day
   await a.page.keyboard.type(String(recount));
   await a.page.keyboard.press('Enter');
   await waitSynced(a.page);

@@ -4,7 +4,7 @@ Browser tests for the cloud-sync client in `index.html` and the `dog-log-v9` ser
 
 They **never contact Supabase DEV or PROD, or the Production Apps Script calendar bridge**:
 
-- **Database.** A disposable local PostgreSQL cluster is created for the run. It loads `supabase/tests/local/supabase_stub.sql` and the real migration `supabase/migrations/20260924225253_dog_log_create_sync_schema.sql`, so the app talks to the actual `dog_log.seed_state` and `dog_log.sync` functions and their privileges.
+- **Database.** A disposable local PostgreSQL cluster is created for the run. It loads `supabase/tests/local/supabase_stub.sql` and the real `supabase/migrations` in order (`20260924225253` base, `20260926005200` WORK-147, `20260926130000` WORK-148, `20261031213557` WORK-287 equal-time transfer fix; listed in `lib/pgcluster.js`), so the app talks to the actual `dog_log.seed_state`, `dog_log.sync` and scheduled-meal functions and their privileges.
 - **Supabase emulator.** `lib/backend.js` stands in for Supabase through Playwright request and WebSocket routing:
   - Auth password and refresh grants;
   - PostgREST RPC, executed as `authenticated` with `request.jwt.claims`;
