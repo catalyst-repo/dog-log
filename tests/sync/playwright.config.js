@@ -1,5 +1,6 @@
 // WORK-136 PR-B client sync tests. Serial (one shared disposable database), Chromium only.
 const { defineConfig } = require('@playwright/test');
+const { launchOptions } = require('./lib/network-guard');
 
 module.exports = defineConfig({
   testDir: './specs',
@@ -11,7 +12,7 @@ module.exports = defineConfig({
   reporter: [['list']],
   use: {
     browserName: 'chromium',
-    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {},
+    launchOptions,
     timezoneId: 'Australia/Melbourne',
     locale: 'en-AU',
     actionTimeout: 10000,

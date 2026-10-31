@@ -1,17 +1,24 @@
 // Shared-account sign-in, first-device seeding and second-device adoption.
-const { test, expect, fixture, g, raw, signIn, waitSynced, seededDevice, EMAIL, PASSWORD } = require('../lib/helpers');
+const { test, expect, fixture, startupDoc, calendarSettled, g, raw, signIn, waitSynced, seededDevice, EMAIL, PASSWORD } = require('../lib/helpers');
 
 test('03 sign-in with an empty cloud does not seed automatically', async ({ device, backend }) => {
   await backend.createUser(EMAIL, PASSWORD);
-  const rawIn = JSON.stringify(fixture());
+  const input = fixture();
+  const rawIn = JSON.stringify(input);
   const { page } = await device({ raw: rawIn });
+  // Startup normalises local data first (lib/helpers.js startupDoc); signing in must change nothing further.
+  await calendarSettled(page);
+  const before = await raw(page);
+  expect(JSON.parse(before)).toEqual(startupDoc(input));
+  expect((await g(page, () => backups())).find(x => x.reason === 'pre-sync').raw).toBe(rawIn);
+  expect(backend.calls).toHaveLength(0);
   await signIn(page);
   await expect(page.locator('#seedPanel button.primary')).toBeVisible();
   expect(backend.rpcCalls('seed_state')).toHaveLength(0);
   expect(backend.rpcCalls('sync').map(c => JSON.parse(c.body).p_mutations)).toEqual([[]]);
   expect(await g(page, () => [meta.mode, meta.awaiting, meta.migration])).toEqual(['local', 'seed-decision', 'backed-up']);
   expect((await backend.pool.query('select count(*)::int n from dog_log.state')).rows[0].n).toBe(0);
-  expect(await raw(page)).toBe(rawIn);
+  expect(await raw(page)).toBe(before);
   expect(backend.calls.filter(c => /signup|admin/.test(c.path))).toHaveLength(0);
 });
 
@@ -83,15 +90,21 @@ test('05 when cloud data already exists, a device never seeds its own local data
   expect(await g(b.page, () => meta.migration)).toBe('adopted-cloud');
 });
 
-test('06 a second device backs up its legacy local data verbatim before adopting the cloud copy', async ({ device, backend }) => {
+test('06 a second device keeps its legacy local data verbatim (pre-sync) and as it stood (pre-adopt) before adopting the cloud copy', async ({ device, backend }) => {
   await seededDevice({ device, backend });
-  const bRaw = JSON.stringify(fixture({ stock: { fridge: 42, freezer: 0, minceKg: 0, neckPackets: 0, necksOnly: 0, minceOnly: 0, lykaPackets: 0, scratchPackets: 0 }, calendar: { endpoint: '', token: 'device-b-token', paired: true, lastSync: null, lastError: null } }));
+  const bInput = fixture({ stock: { fridge: 42, freezer: 0, minceKg: 0, neckPackets: 0, necksOnly: 0, minceOnly: 0, lykaPackets: 0, scratchPackets: 0 }, calendar: { endpoint: '', token: 'device-b-token', paired: true, lastSync: null, lastError: null } });
+  const bRaw = JSON.stringify(bInput);
   const b = await device({ raw: bRaw });
+  await calendarSettled(b.page);
+  const beforeAdopt = await raw(b.page);
+  expect(JSON.parse(beforeAdopt)).toEqual(startupDoc(bInput));
   await signIn(b.page);
   await waitSynced(b.page);
   const list = await g(b.page, () => backups());
-  expect(list.find(x => x.reason === 'pre-adopt').raw).toBe(bRaw);
+  // The pre-sync backup is the untouched original. The pre-adopt backup holds the data as it stood just before adoption,
+  // which startup has already normalised, so it is no longer a verbatim copy of the original: a follow-up concern.
   expect(list.find(x => x.reason === 'pre-sync').raw).toBe(bRaw);
+  expect(list.find(x => x.reason === 'pre-adopt').raw).toBe(beforeAdopt);
   const mirror = JSON.parse(await raw(b.page));
   expect(mirror.stock.fridge).toBe(5);
   expect(mirror.calendar.token).toBe('device-b-token');

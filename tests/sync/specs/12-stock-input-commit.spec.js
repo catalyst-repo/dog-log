@@ -1,7 +1,7 @@
 // Stock fields keep an in-progress edit (WORK-136 #27): render() from the minute tick, a return to the app, a sync or a
 // realtime refresh never overwrites the field being edited (which silently dropped the edit on the installed iOS app), and
 // hiding the app commits the edit to the outbox before iOS suspends it.
-const { test, expect, g, raw, outboxOps, signIn, waitSynced, seededDevice, fixture, setOffline } = require('../lib/helpers');
+const { test, expect, g, raw, outboxOps, signIn, waitSynced, seededDevice, fixture, setOffline, SCHEDULE_DEFAULTS } = require('../lib/helpers');
 
 const sentSets = backend => backend.rpcCalls('sync').flatMap(c => JSON.parse(c.body).p_mutations || []).filter(o => o.type === 'set');
 async function typeInto(page, sel, text) {
@@ -147,14 +147,26 @@ test('49 without cloud sync, a re-render during an edit keeps the typed value an
 test('50 a meal slot passing while Fridge is being edited does not turn the recount into a conflict', async ({ device, backend }) => {
   const a = await seededDevice({ device, backend });
   await a.page.locator('#fridgeVal').focus(); // the user sees 5 and starts recounting
-  // Meal slots pass during the edit: the edit began 13 h ago, and the server has meals due since then.
-  await g(a.page, () => { fridgeVal.dataset.seenAt = String(Date.now() - 13 * 3600 * 1000); });
+  // A meal slot passes during the edit: the edit began just before the most recent Breakfast or Dinner, and the server
+  // cursor is rewound to the same moment, so exactly one meal is due at any time of day. (A fixed rewind such as 13 h
+  // spans no slot between 07:00 and 09:00, because 18:00 -> 09:00 is a 15 h gap.)
   const rev = (await backend.state(a.owner)).revision;
-  await backend.pool.query("update dog_log.state set meal_cursor = now() - interval '13 hours' where owner_id = $1", [a.owner]);
+  const { rows: [{ cursor }] } = await backend.pool.query(
+    `update dog_log.state s set meal_cursor = (
+       select max(x.at) - interval '1 minute' from (
+         select ((now() at time zone s.time_zone)::date + d.n + t.at) at time zone s.time_zone as at
+           from (values (0), (-1)) d(n), (values ($2::time), ($3::time)) t(at)) x
+        where x.at <= now())
+     where owner_id = $1 returning meal_cursor as cursor`,
+    [a.owner, SCHEDULE_DEFAULTS.breakfastTime, SCHEDULE_DEFAULTS.dinnerTime]);
+  await a.page.evaluate(at => { fridgeVal.dataset.seenAt = String(at); }, cursor.getTime());
   await g(a.page, () => syncNow('test'));
   await expect.poll(() => g(a.page, () => cache.revision)).toBeGreaterThan(rev);
+  const fed = await backend.pool.query("select slot from dog_log.meal_events where owner_id = $1 and origin = 'server' and outcome = 'fed' and slot_at > $2", [a.owner, cursor]);
+  expect(fed.rows).toHaveLength(1); // one meal was deducted by the server
   const fridgeNow = (await backend.state(a.owner)).doc.stock.fridge;
-  expect(fridgeNow).toBeLessThan(5); // a meal was deducted by the server
+  // The server changed Fridge: -1 for the meal, and +2 when the slot is Dinner and its 18:00 transfer runs (WORK-287).
+  expect(fridgeNow).not.toBe(5);
   await expect(a.page.locator('#fridgeVal')).toHaveValue('5'); // the focused field was not rewritten
   const recount = 9; // differs from both the value on screen (5) and the post-meal value (<5), whatever the time of day
   await a.page.keyboard.type(String(recount));
