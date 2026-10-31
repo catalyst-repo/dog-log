@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Disposable local test run for Dog Log base sync + WORK-147 evening transfer.
+# Disposable local test run for Dog Log base sync, WORK-147 evening transfer,
+# WORK-148 configurable Food Settings and the WORK-287 equal-time transfer fix.
 #
 # Creates a throwaway PostgreSQL cluster in a temp dir, loads the local Supabase
-# stub, applies the migration, runs the SQL suite, then runs the two-session
+# stub, applies the migrations, runs the SQL suite, then runs the two-session
 # concurrency tests and the rollback test, and deletes the cluster.
 # It never connects to Supabase DEV or PROD.
 #
@@ -20,6 +21,8 @@ MIGRATION="$SUPA/migrations/20260926005200_dog_log_add_evening_freezer_transfer.
 ROLLBACK="$SUPA/rollbacks/20260926005200_dog_log_add_evening_freezer_transfer.rollback.sql"
 SCHEDULE_MIGRATION="$SUPA/migrations/20260926130000_dog_log_configurable_food_schedule.sql"
 SCHEDULE_ROLLBACK="$SUPA/rollbacks/20260926130000_dog_log_configurable_food_schedule.rollback.sql"
+FIX_MIGRATION="$SUPA/migrations/20261031213557_dog_log_fix_equal_time_transfer.sql"
+FIX_ROLLBACK="$SUPA/rollbacks/20261031213557_dog_log_fix_equal_time_transfer.rollback.sql"
 BASE_ROLLBACK="$SUPA/rollbacks/20260924225253_dog_log_create_sync_schema.rollback.sql"
 PG_BINDIR="${PG_BINDIR:-$(pg_config --bindir)}"
 PORT="${PGTEST_PORT:-55439}"
@@ -41,7 +44,9 @@ echo "== install (clean database)"
 "${PSQL[@]}" -f "$HERE/supabase_stub.sql"
 "${PSQL[@]}" --single-transaction -f "$BASE_MIGRATION"
 "${PSQL[@]}" --single-transaction -f "$MIGRATION"
-pass "base + WORK-147 migrations applied to a clean database"
+"${PSQL[@]}" --single-transaction -f "$SCHEDULE_MIGRATION"
+"${PSQL[@]}" --single-transaction -f "$FIX_MIGRATION"
+pass "base + WORK-147 + WORK-148 + WORK-287 migrations applied to a clean database"
 
 echo "== SQL suite"
 "${PSQL[@]}" -f "$SUPA/tests/dog_log_sync.sql" 2>&1 | sed -e 's/^psql:[^ ]* NOTICE:  //' | grep -E '^(ok|FAIL|ALL)' || fail "SQL suite"
@@ -76,7 +81,13 @@ DEVICES=$("${PSQL[@]}" -c "select string_agg(distinct processed_by_device, ',') 
 [ "$FRIDGE" = "$((5 - (EXPECTED < 5 ? EXPECTED : 5)))" ] || fail "concurrent meals: fridge $FRIDGE"
 [ "$(cat "$WORK/s1")" = "$(cat "$WORK/s2")" ] || fail "concurrent meals: sessions returned revisions $(cat "$WORK/s1") / $(cat "$WORK/s2")"
 [ "$DEVICES" = "desktop" ] || fail "concurrent meals: processed by '$DEVICES' (expected only the first session)"
-pass "concurrent syncs: $EVENTS meal events, one deduction each (fridge 5 -> $FRIDGE); second session saw them as already processed"
+# WORK-287: the default 18:00 transfer shares Dinner's time and runs exactly once per due day.
+EXPECTED_T=$("${PSQL[@]}" -c "select count(*) from generate_series(((now() - interval '31 hours') at time zone 'Australia/Melbourne')::date, (now() at time zone 'Australia/Melbourne')::date, interval '1 day') d
+  where (d::date + time '18:00') at time zone 'Australia/Melbourne' > (select meal_tracking_since from dog_log.state where owner_id = '$C')
+    and (d::date + time '18:00') at time zone 'Australia/Melbourne' <= now()")
+TRANSFERS=$("${PSQL[@]}" -c "select count(*) from dog_log.meal_events where owner_id = '$C' and origin = 'server' and slot = 'transfer'")
+[ "$EXPECTED_T" -ge 1 ] && [ "$TRANSFERS" = "$EXPECTED_T" ] || fail "concurrent transfers: $TRANSFERS events, expected $EXPECTED_T"
+pass "concurrent syncs: $EVENTS meal events and $TRANSFERS equal-time transfer(s), one deduction each (fridge 5 -> $FRIDGE); second session saw them as already processed"
 
 echo "== concurrency: the same mutation retried from two tabs at once"
 M=44444444-4444-4444-8444-444444444444
@@ -100,9 +111,26 @@ wait
 [ "$("${PSQL[@]}" -c "select (doc #>> '{stock,fridge}')::int from dog_log.state where owner_id = '$S'")" = "9" ] || fail "seed race overwrote the first seed"
 pass "seed race: first seeded, second got cloud-exists, nothing overwritten"
 
-echo "== WORK-148 rollback"
+echo "== WORK-287 rollback"
+ROWS_BEFORE=$("${PSQL[@]}" -c "select count(*) from dog_log.state")
+EVENTS_BEFORE=$("${PSQL[@]}" -c "select count(*) from dog_log.meal_events")
+TRANSFERS_BEFORE=$("${PSQL[@]}" -c "select count(*) from dog_log.meal_events where slot = 'transfer'")
+[ "$TRANSFERS_BEFORE" -ge 1 ] || fail "no transfer rows to preserve across the WORK-287 rollback"
+"${PSQL[@]}" -f "$FIX_ROLLBACK" >/dev/null
+[ "$("${PSQL[@]}" -c "select count(*) from dog_log.state")" = "$ROWS_BEFORE" ] && [ "$("${PSQL[@]}" -c "select count(*) from dog_log.meal_events")" = "$EVENTS_BEFORE" ] || fail "WORK-287 rollback changed rows"
+[ "$("${PSQL[@]}" -c "select count(*) from dog_log.meal_events where slot = 'transfer'")" = "$TRANSFERS_BEFORE" ] || fail "WORK-287 rollback lost transfer rows"
+[ "$("${PSQL[@]}" -c "select position('v_from' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) = 0 and position('fridgeTransferTime' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) > 0")" = "t" ] || fail "WORK-287 rollback did not restore the WORK-148 meal function"
+[ "$("${PSQL[@]}" -c "select has_function_privilege('authenticated', 'dog_log.sync(jsonb,text,integer)', 'execute') and not has_function_privilege('authenticated', 'dog_log._process_due_meals(uuid,timestamptz,text)', 'execute')")" = "t" ] || fail "WORK-287 rollback changed privileges"
+[ "$(as_user "$C" "select dog_log.sync('[]'::jsonb, 'after-w287-rollback', 1) ->> 'status';")" = "ok" ] || fail "sync fails after WORK-287 rollback"
+pass "WORK-287 rollback restores the WORK-148 meal function, keeps every row and privileges; sync still works"
+"${PSQL[@]}" --single-transaction -f "$FIX_MIGRATION"
+[ "$("${PSQL[@]}" -c "select position('v_from' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) > 0")" = "t" ] || fail "WORK-287 did not reapply"
+pass "WORK-287 migration re-applies cleanly"
+
+echo "== WORK-148 rollback (after rolling WORK-287 back)"
+"${PSQL[@]}" -f "$FIX_ROLLBACK" >/dev/null
 "${PSQL[@]}" -f "$SCHEDULE_ROLLBACK" >/dev/null
-pass "WORK-148 rollback applied before WORK-147 rollback"
+pass "WORK-287 and WORK-148 rollbacks applied before WORK-147 rollback"
 
 echo "== WORK-147 rollback"
 ROWS_BEFORE=$("${PSQL[@]}" -c "select count(*) from dog_log.state")
@@ -117,7 +145,8 @@ pass "WORK-147 rollback stops future transfers while preserving transfer-aware r
 [ "$("${PSQL[@]}" -c "select position('transferred_since' in pg_get_functiondef('dog_log._apply_op(uuid,jsonb,timestamptz,bigint)'::regprocedure))")" != "0" ] || fail "WORK-147 operation function did not reapply"
 pass "WORK-147 migration re-applies cleanly"
 "${PSQL[@]}" --single-transaction -f "$SCHEDULE_MIGRATION"
-pass "WORK-148 migration re-applies cleanly"
+"${PSQL[@]}" --single-transaction -f "$FIX_MIGRATION"
+pass "WORK-148 and WORK-287 migrations re-apply cleanly"
 
 echo "== base rollback"
 if "${PSQL[@]}" -f "$BASE_ROLLBACK" >/dev/null 2>"$WORK/rb.err"; then fail "base rollback ran while cloud state exists"; fi
@@ -131,6 +160,8 @@ pass "post-seed base rollback refused; data intact"
 pass "pre-adoption base rollback removed the schema and the publication entry"
 "${PSQL[@]}" --single-transaction -f "$BASE_MIGRATION"
 "${PSQL[@]}" --single-transaction -f "$MIGRATION"
-pass "base + WORK-147 migrations re-apply cleanly after rollback"
+"${PSQL[@]}" --single-transaction -f "$SCHEDULE_MIGRATION"
+"${PSQL[@]}" --single-transaction -f "$FIX_MIGRATION"
+pass "base + WORK-147 + WORK-148 + WORK-287 migrations re-apply cleanly after rollback"
 
 echo "ALL LOCAL DOG_LOG DATABASE TESTS PASSED"

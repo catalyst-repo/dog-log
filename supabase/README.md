@@ -7,10 +7,13 @@ This folder holds the Dog Log cloud-sync database: the `dog_log` schema in the s
 | `migrations/20260924225253_dog_log_create_sync_schema.sql` | Creates the schema, tables, RLS, RPCs and the realtime publication entry |
 | `migrations/20260926005200_dog_log_add_evening_freezer_transfer.sql` | WORK-147: after Dinner at 18:00, move up to 2 remaining Full Containers from Freezer to Fridge |
 | `rollbacks/20260926005200_dog_log_add_evening_freezer_transfer.rollback.sql` | Stops future transfers by restoring the old meal processor, while retaining the ledger and transfer-aware recount/restore reconciliation |
+| `migrations/20261031213557_dog_log_fix_equal_time_transfer.sql` | WORK-287: runs a freezer-to-fridge transfer due at the same time as a meal (both 18:00 by default), which the WORK-148 processor skipped. Past days are not backfilled |
+| `rollbacks/20261031213557_dog_log_fix_equal_time_transfer.rollback.sql` | Restores the WORK-148 meal processor verbatim (equal-time transfers are skipped again); keeps every row |
 | `rollbacks/20260924225253_dog_log_create_sync_schema.rollback.sql` | Pre-adoption rollback only (see below) |
 | `tests/dog_log_sync.sql` | SQL assertion suite. Runs in one transaction that is rolled back |
 | `tests/local/supabase_stub.sql` | Minimal Supabase stand-in for a **disposable local** Postgres only |
 | `tests/local/run_local.sh` | Throwaway-cluster runner: install, SQL suite, two-session concurrency, rollback |
+| `tests/local/run_local.ps1` | Windows PowerShell equivalent of `run_local.sh` (loopback TCP) |
 
 ## What the migration creates
 
