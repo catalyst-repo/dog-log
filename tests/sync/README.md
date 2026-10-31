@@ -21,6 +21,22 @@ npm ci                     # @playwright/test 1.56.1, pg
 npx playwright test
 ```
 
+Windows (PowerShell), with the PostgreSQL 15+ binaries unpacked anywhere:
+
+```powershell
+cd tests\sync
+npm ci
+$env:PG_BINDIR = 'C:\path\to\pgsql\bin'
+npx playwright test
+```
+
+Where the disposable cluster listens:
+
+- **Linux/macOS:** a private Unix-socket directory under the temp directory, with no TCP listener.
+- **Windows:** loopback TCP only (`127.0.0.1`), because node-postgres cannot use a `C:\` path as a socket host. Set `DOGLOG_PG_TCP=1` to use the same loopback TCP path on Linux or macOS.
+
+The ports default to 55461 (PostgreSQL) and 55462 (app server); override them with `DOGLOG_PGPORT_BASE` and `DOGLOG_APP_PORT`. `pg_ctl start` runs with no inherited stdio (the started server would otherwise hold the pipes open and the run would hang on Windows); a failed start reports the server log and removes its temporary `doglog-pg-*` directory. The vendored library's bytes are protected from line-ending conversion by `.gitattributes`, so `core.autocrlf=true` checkouts and `git archive` copies keep the pinned hash.
+
 ## Calendar bridge suite (WORK-282)
 
 `calendar/` runs local-mode Dog Log against `lib/calendar-bridge.js`, a stand-in for the google-calendar Apps Script bridge that answers the same CORS-readable JSON as the deployed web app. It needs no PostgreSQL and never contacts Google:

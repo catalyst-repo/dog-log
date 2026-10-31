@@ -1,5 +1,6 @@
-// Food Settings layout (WORK-136 #28, #29): Total containers owned is the only Food setting. On iPhone / installed-PWA widths
-// it spans the card, keeps a 44px tap target and its label is never clipped, and nothing overflows the viewport.
+// Food Settings layout (WORK-136 #28, #29; WORK-148): Total containers owned plus the six configurable schedule fields.
+// On iPhone / installed-PWA widths every field spans the card, keeps a 44px tap target and its label is never clipped,
+// and nothing overflows the viewport.
 const { test, expect, g, waitSynced, seededDevice } = require('../lib/helpers');
 
 const IOS_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
@@ -10,40 +11,48 @@ const WIDTHS = [
   ['large iPhone (Pro Max)', 430, 932],
 ];
 
+// The Food Settings fields, in on-screen order (WORK-148 added the six after Total containers owned).
+const FOOD_FIELDS = ['setTotal', 'setMaxFreezer', 'setMaxFridge', 'setTransferQty', 'setTransferTime', 'setBreakfast', 'setDinner'];
+
 async function measure(page) {
   return page.evaluate(() => {
     const box = e => e.getBoundingClientRect();
-    const card = setTotal.closest('.card'), label = document.querySelector('label[for="setTotal"]');
-    const a = box(setTotal), pad = parseFloat(getComputedStyle(card).paddingLeft) + parseFloat(getComputedStyle(card).paddingRight);
+    const card = setTotal.closest('.card'), pad = parseFloat(getComputedStyle(card).paddingLeft) + parseFloat(getComputedStyle(card).paddingRight);
     return {
-      a: { x: a.left, w: a.width, h: a.height, r: a.right }, inner: card.clientWidth - pad,
-      inputs: card.querySelectorAll('input').length,
+      inner: card.clientWidth - pad,
+      ids: [...card.querySelectorAll('input')].map(i => i.id),
+      fields: [...card.querySelectorAll('input')].map(i => {
+        const a = box(i), label = document.querySelector(`label[for="${i.id}"]`);
+        return { id: i.id, w: a.width, h: a.height, r: a.right, labelled: !!label, labelClipped: !!label && label.scrollWidth > label.clientWidth + 1 };
+      }),
       overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      labelClipped: label.scrollWidth > label.clientWidth + 1,
     };
   });
 }
 
 for (const [name, width, height] of WIDTHS) {
-  test(`53 ${name} (${width}px): Total containers owned is the one Food setting, full width, with no horizontal overflow`, async ({ device }) => {
+  test(`53 ${name} (${width}px): every Food setting is full width, with no horizontal overflow`, async ({ device }) => {
     const d = await device({ raw: null, viewport: { width, height }, userAgent: IOS_UA });
     await g(d.page, () => showView('settings'));
     const m = await measure(d.page);
-    expect(m.inputs).toBe(1);
-    expect(Math.abs(m.a.w - m.inner)).toBeLessThan(1);          // spans the card, no leftover half column
-    expect(m.a.h).toBeGreaterThanOrEqual(44);                   // tap target
-    expect(m.a.r).toBeLessThanOrEqual(width);                   // inside the viewport
+    expect(m.ids).toEqual(FOOD_FIELDS);
+    for (const f of m.fields) {
+      expect(Math.abs(f.w - m.inner), f.id).toBeLessThan(1);    // spans the card, no leftover half column
+      expect(f.h, f.id).toBeGreaterThanOrEqual(44);             // tap target
+      expect(f.r, f.id).toBeLessThanOrEqual(width);             // inside the viewport
+      expect(f.labelled, f.id).toBe(true);
+      expect(f.labelClipped, f.id).toBe(false);
+    }
     expect(m.overflowX).toBe(0);                                // no horizontal page scroll
-    expect(m.labelClipped).toBe(false);
   });
 }
 
-test('54 on desktop the field is bounded by the app column and does not overflow', async ({ device }) => {
+test('54 on desktop the Food settings fields are bounded by the app column and do not overflow', async ({ device }) => {
   const desk = await device({ raw: null, viewport: { width: 1280, height: 900 } });
   await g(desk.page, () => showView('settings'));
   const dm = await measure(desk.page);
-  expect(dm.inputs).toBe(1);
-  expect(dm.a.w).toBeLessThanOrEqual(760); // the app column (max-width 760px) still bounds it
+  expect(dm.ids).toEqual(FOOD_FIELDS);
+  for (const f of dm.fields) expect(f.w, f.id).toBeLessThanOrEqual(760); // the app column (max-width 760px) still bounds them
   expect(dm.overflowX).toBe(0);
 });
 

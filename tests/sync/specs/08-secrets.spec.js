@@ -25,8 +25,25 @@ test('27 shipped source contains no service-role key, secret key, JWT or databas
   expect(html).not.toMatch(/console\.(log|info|debug)\([^)]*password/i);
 });
 
+const VENDORED = 'vendor/supabase-js-2.116.0.min.js';
+const PINNED_SHA256 = '84ee9bf45695c1dd3ba1595b6bcfb0f09672434631351ffc8ebe9140545d5ff6';
+const sha256 = buf => require('crypto').createHash('sha256').update(buf).digest('hex');
+function git(args) {
+  try { return require('child_process').execFileSync('git', ['-C', ROOT, ...args], { stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 << 20 }); } catch (e) { return null; }
+}
+
 test('the vendored supabase-js is the pinned, integrity-checked 2.116.0 build', () => {
-  const buf = fs.readFileSync(path.join(ROOT, 'vendor/supabase-js-2.116.0.min.js'));
-  expect(require('crypto').createHash('sha256').update(buf).digest('hex')).toBe('84ee9bf45695c1dd3ba1595b6bcfb0f09672434631351ffc8ebe9140545d5ff6');
+  // The bytes this checkout serves (and the service worker precaches) are the pinned build.
+  expect(sha256(fs.readFileSync(path.join(ROOT, VENDORED)))).toBe(PINNED_SHA256);
   expect(fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8')).toContain("'/vendor/supabase-js-2.116.0.min.js'");
+  // Line-ending conversion (core.autocrlf=true on Windows, or `git archive`) must never rewrite it.
+  expect(fs.readFileSync(path.join(ROOT, '.gitattributes'), 'utf8')).toMatch(/^vendor\/\*\* -text$/m);
+  // In a git checkout, the committed blob itself is the pinned build and Git treats it as non-text.
+  const blob = git(['cat-file', 'blob', `HEAD:${VENDORED}`]);
+  if (blob === null) {
+    test.info().annotations.push({ type: 'note', description: 'not a git checkout: committed-blob check not available; served bytes and .gitattributes verified' });
+    return;
+  }
+  expect(sha256(blob)).toBe(PINNED_SHA256);
+  expect(String(git(['check-attr', 'text', '--', VENDORED])).trim()).toBe(`${VENDORED}: text: unset`);
 });

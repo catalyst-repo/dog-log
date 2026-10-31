@@ -6,6 +6,13 @@ const APP = () => process.env.DOGLOG_APP_URL;
 const EMAIL = 'household@dog-log.test';
 const PASSWORD = 'correct horse battery staple';
 
+// The six WORK-148 schedule settings the server's _norm_doc materialises into every cloud doc.settings, with their
+// migration defaults (supabase/migrations/20260926130000_dog_log_configurable_food_schedule.sql). Pinned here, not read
+// from index.html, so a drift in either the client or the server is caught.
+const SCHEDULE_DEFAULTS = Object.freeze({ breakfastTime: '09:00', dinnerTime: '18:00', fridgeTransferTime: '18:00', fridgeTransferCount: 2, maxFreezerContainers: 70, maxFridgeContainers: null });
+// The exact cloud doc.settings for an owner who set only these fields (schedule fields left at their defaults).
+const cloudSettings = (own = {}) => ({ ...own, ...SCHEDULE_DEFAULTS });
+
 // WORK-135-shape local data, including the legacy neckBags field.
 function fixture(overrides = {}) {
   return {
@@ -84,4 +91,4 @@ async function seededDevice({ device, backend }, localData = fixture(), opts = {
   return { ...d, owner };
 }
 
-module.exports = { test, expect: base.expect, APP, EMAIL, PASSWORD, fixture, g, signIn, waitSynced, raw, outboxOps, seededDevice, setOffline };
+module.exports = { test, expect: base.expect, APP, EMAIL, PASSWORD, fixture, SCHEDULE_DEFAULTS, cloudSettings, g, signIn, waitSynced, raw, outboxOps, seededDevice, setOffline };
