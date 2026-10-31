@@ -121,7 +121,10 @@ select pg_temp.ok((select doc -> 'stock' from dog_log.state where owner_id = :A)
                   = '{"fridge": 3, "freezer": 2, "minceKg": 1.200, "neckPackets": 4, "necksOnly": 2, "minceOnly": 0, "lykaPackets": 0, "scratchPackets": 1}'::jsonb,
                   '04 seed normalises (converts, never rejects) legacy/bad values');
 select pg_temp.ok((select jsonb_array_length(doc -> 'history') from dog_log.state where owner_id = :A) = 1, '04 malformed history entries dropped');
-select pg_temp.ok((select count(*) from dog_log.meal_events where owner_id = :A and origin = 'seed') = 2, '04 recent device mealLog imported as seed events');
+-- WORK-148: a pre-ledger device's imported Dinner also records that day's transfer as done (WORK-287 test fix).
+select pg_temp.ok((select count(*) from dog_log.meal_events where owner_id = :A and origin = 'seed' and slot <> 'transfer') = 2
+              and (select count(*) from dog_log.meal_events where owner_id = :A and origin = 'seed' and slot = 'transfer') = 1,
+                  '04 recent device mealLog imported as seed events');
 select pg_temp.ok((select count(*) from dog_log.state_snapshots where owner_id = :A and reason = 'seed') = 1, '04 seed snapshot recorded');
 
 -- ------------------------------------------- 5. repeated / competing seeds
@@ -672,7 +675,9 @@ select pg_temp.reset_h(2, 1, '{}', '2026-09-13 19:00');
 select pg_temp.ok(pg_temp.h_run('2026-09-13 20:30') and pg_temp.h_ev('2026-09-13', 'transfer') = 'transferred:-:1@20:00' and pg_temp.h_stock() = '3/0',
                   '24 only 1 freezer container: 1 moves, total conserved');
 select pg_temp.reset_h(2, 0, '{}', '2026-09-14 19:00');
-select pg_temp.ok(pg_temp.h_run('2026-09-14 20:30') and pg_temp.h_ev('2026-09-14', 'transfer') = 'transferred:-:0@20:00' and pg_temp.h_stock() = '2/0'
+-- Run in its own statement: an inline subquery in the same statement reads the snapshot from before the run.
+select pg_temp.h_run('2026-09-14 20:30') as h_ran_empty \gset
+select pg_temp.ok(:'h_ran_empty'::boolean and pg_temp.h_ev('2026-09-14', 'transfer') = 'transferred:-:0@20:00' and pg_temp.h_stock() = '2/0'
               and (select doc #>> '{history,0,action}' from dog_log.state where owner_id = :H) like '20:00 freezer-to-fridge transfer %: no Full Containers available in Freezer',
                   '24 empty freezer: nothing moves, counts stay non-negative, clearly recorded');
 select pg_temp.h_op('{"type":"settings","field":"fridgeTransferCount","value":0,"expected":3}', '2026-09-14 21:00') \g /dev/null
@@ -718,7 +723,8 @@ select pg_temp.ok((select doc #>> '{history,0,action}' from dog_log.state where 
                   '24 catch-up history recorded');
 select pg_temp.reset_h(1, 20, '{}', '2026-09-18 06:00');
 delete from dog_log.meal_events where owner_id = :H and slot_at > timestamptz '2026-09-18 06:00 Australia/Melbourne';
-select pg_temp.ok(pg_temp.h_run('2026-09-22 06:00')
+select pg_temp.h_run('2026-09-22 06:00') as h_ran_long \gset
+select pg_temp.ok(:'h_ran_long'::boolean
               and (select doc #>> '{history,0,action}' from dog_log.state where owner_id = :H) = 'Scheduled meals caught up: 8 meals, 8 Full Containers used'
               and (select doc #>> '{history,1,action}' from dog_log.state where owner_id = :H) = 'Automatic 20:00 freezer-to-fridge transfers caught up: 8 Full Containers moved across 4 days',
                   '24 long catch-up summarises meals and configured-time transfers');
@@ -772,6 +778,109 @@ select pg_temp.ok((select count(*) from dog_log.meal_events where owner_id = :I 
               and (select count(*) from dog_log.meal_events where owner_id = :J and origin = 'seed' and slot = 'transfer') = 1
               and (select count(*) from dog_log.meal_events where owner_id = :J and origin = 'seed') = 3,
                   '24 seed imports transfer slots (legacy devices: implied by their Dinner)');
+
+-- ---------------------- 25. WORK-287 equal-time transfer (same time as a meal slot)
+-- Each run is its own statement, so later reads see what it wrote.
+\set K '''28728728-0000-4000-8000-000000000287'''
+insert into auth.users (id, email) values (:K, 'k@test.invalid');
+create function pg_temp.reset_k(p_fridge int, p_freezer int, p_settings jsonb, p_cursor text) returns void language sql as $$
+  update dog_log.state set doc = jsonb_set(jsonb_set(jsonb_set(doc, '{stock,fridge}', to_jsonb(p_fridge)), '{stock,freezer}', to_jsonb(p_freezer)),
+                                           '{settings}', (doc -> 'settings') || p_settings),
+                           meal_cursor = (p_cursor::timestamp at time zone 'Australia/Melbourne')
+   where owner_id = '28728728-0000-4000-8000-000000000287';
+  delete from dog_log.meal_events where owner_id = '28728728-0000-4000-8000-000000000287'
+     and slot_at > (p_cursor::timestamp at time zone 'Australia/Melbourne');
+$$;
+create function pg_temp.k_stock() returns text language sql as $$
+  select (doc #>> '{stock,fridge}') || '/' || (doc #>> '{stock,freezer}') from dog_log.state where owner_id = '28728728-0000-4000-8000-000000000287'
+$$;
+create function pg_temp.k_ev(p_day date, p_slot text) returns text language sql as $$
+  select outcome || ':' || coalesce(source_container, '-') || ':' || coalesce(freezer_to_fridge_count::text, '-') || '@' ||
+         to_char(slot_at at time zone 'Australia/Melbourne', 'HH24:MI')
+    from dog_log.meal_events where owner_id = '28728728-0000-4000-8000-000000000287' and meal_date = p_day and slot = p_slot
+$$;
+create function pg_temp.k_run(p_until text) returns boolean language sql as $$
+  select dog_log._process_due_meals('28728728-0000-4000-8000-000000000287', p_until::timestamp at time zone 'Australia/Melbourne', 'w287')
+$$;
+create function pg_temp.k_hist(p_i int) returns text language sql as $$
+  select doc -> 'history' -> p_i ->> 'action' from dog_log.state where owner_id = '28728728-0000-4000-8000-000000000287'
+$$;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"28728728-0000-4000-8000-000000000287","role":"authenticated"}', true) \g /dev/null
+select dog_log.seed_state(gen_random_uuid(), jsonb_build_object('stock', jsonb_build_object('fridge', 0, 'freezer', 0),
+  'tracking', jsonb_build_object('mealCursor', (extract(epoch from timestamptz '2026-10-12 08:00 Australia/Melbourne') * 1000)::bigint)),
+  'dev-k', 1) \g /dev/null
+:asOwner
+\set k_defaults '''{"breakfastTime":"09:00","dinnerTime":"18:00","fridgeTransferTime":"18:00","fridgeTransferCount":2}'''
+
+-- default settings: Dinner and the transfer are both due at 18:00
+select pg_temp.reset_k(0, 5, :k_defaults, '2026-10-12 17:59');
+select pg_temp.k_run('2026-10-12 18:01') as k1 \gset
+select pg_temp.ok(:'k1'::boolean and pg_temp.k_ev('2026-10-12', 'dinner') = 'fed:freezer:-@18:00'
+              and pg_temp.k_ev('2026-10-12', 'transfer') = 'transferred:-:2@18:00' and pg_temp.k_stock() = '2/2'
+              and (select meal_cursor from dog_log.state where owner_id = :K) = timestamptz '2026-10-12 18:00 Australia/Melbourne',
+                  '25 equal time: Dinner, then the 18:00 transfer, both run once; the cursor stops at 18:00');
+select pg_temp.ok(pg_temp.k_hist(0) = '18:00 freezer-to-fridge transfer ' || dog_log._fmt_day(timestamptz '2026-10-12 18:00 Australia/Melbourne', 'Australia/Melbourne') || ': 2 Full Containers moved from Freezer to Fridge'
+              and pg_temp.k_hist(1) like 'Dinner %: 1 Full Container used (freezer)',
+                  '25 equal time: history shows Dinner, then the transfer');
+select pg_temp.k_run('2026-10-12 18:01') as k1_retry \gset
+select pg_temp.k_run('2026-10-12 18:30') as k1_later \gset
+select pg_temp.ok(not :'k1_retry'::boolean and not :'k1_later'::boolean and pg_temp.k_stock() = '2/2'
+              and (select count(*) from dog_log.meal_events where owner_id = :K and meal_date = '2026-10-12' and slot in ('dinner', 'transfer')) = 2,
+                  '25 replaying the window, or a later window with nothing due, changes nothing');
+
+-- p_until exactly at the shared time processes both slots
+select pg_temp.reset_k(1, 3, :k_defaults, '2026-10-13 17:00');
+select pg_temp.k_run('2026-10-13 18:00') as k2 \gset
+select pg_temp.ok(:'k2'::boolean and pg_temp.k_ev('2026-10-13', 'dinner') = 'fed:fridge:-@18:00'
+              and pg_temp.k_ev('2026-10-13', 'transfer') = 'transferred:-:2@18:00' and pg_temp.k_stock() = '2/1',
+                  '25 a window ending exactly at 18:00 runs Dinner and the transfer');
+
+-- independent times still split across windows
+select pg_temp.reset_k(0, 4, :k_defaults::jsonb || '{"fridgeTransferTime":"18:30"}', '2026-10-14 17:00');
+select pg_temp.k_run('2026-10-14 18:10') as k3a \gset
+select pg_temp.ok(:'k3a'::boolean and pg_temp.k_ev('2026-10-14', 'dinner') = 'fed:freezer:-@18:00'
+              and pg_temp.k_ev('2026-10-14', 'transfer') is null and pg_temp.k_stock() = '0/3',
+                  '25 transfer at 18:30: only Dinner is due at 18:10');
+select pg_temp.k_run('2026-10-14 18:40') as k3b \gset
+select pg_temp.ok(:'k3b'::boolean and pg_temp.k_ev('2026-10-14', 'transfer') = 'transferred:-:2@18:30' and pg_temp.k_stock() = '2/1',
+                  '25 transfer at 18:30 runs in the next window');
+
+-- all three slots at one time run in order Breakfast, Dinner, transfer
+select pg_temp.reset_k(1, 3, '{"breakfastTime":"09:00","dinnerTime":"09:00","fridgeTransferTime":"09:00","fridgeTransferCount":2}', '2026-10-15 08:00');
+select pg_temp.k_run('2026-10-15 09:01') as k4 \gset
+select pg_temp.ok(:'k4'::boolean and pg_temp.k_ev('2026-10-15', 'breakfast') = 'fed:fridge:-@09:00'
+              and pg_temp.k_ev('2026-10-15', 'dinner') = 'fed:freezer:-@09:00'
+              and pg_temp.k_ev('2026-10-15', 'transfer') = 'transferred:-:2@09:00' and pg_temp.k_stock() = '2/0'
+              and pg_temp.k_hist(0) like '09:00 freezer-to-fridge transfer %' and pg_temp.k_hist(1) like 'Dinner %' and pg_temp.k_hist(2) like 'Breakfast %',
+                  '25 three slots at 09:00 each run once, in order Breakfast, Dinner, transfer');
+
+-- multi-day catch-up with equal times: one transfer per day
+select pg_temp.reset_k(1, 20, :k_defaults, '2026-10-16 06:00');
+select pg_temp.k_run('2026-10-19 06:00') as k5 \gset
+select pg_temp.ok(:'k5'::boolean
+              and (select count(*) from dog_log.meal_events where owner_id = :K and slot <> 'transfer' and slot_at > timestamptz '2026-10-16 06:00 Australia/Melbourne') = 6
+              and (select count(*) from dog_log.meal_events where owner_id = :K and slot = 'transfer' and freezer_to_fridge_count = 2
+                     and slot_at > timestamptz '2026-10-16 06:00 Australia/Melbourne') = 3
+              and pg_temp.k_stock() = '2/13',
+                  '25 three-day catch-up: 6 meals and 3 equal-time transfers, 21 - 6 = 15 Full Containers');
+
+-- a day the defective function already passed is not backfilled; the next day transfers
+select pg_temp.reset_k(2, 6, :k_defaults, '2026-10-20 18:00');
+insert into dog_log.meal_events (owner_id, meal_date, slot, outcome, source_container, slot_at, origin)
+values (:K, '2026-10-20', 'dinner', 'fed', 'fridge', timestamptz '2026-10-20 18:00 Australia/Melbourne', 'server');
+select pg_temp.k_run('2026-10-21 18:01') as k6 \gset
+select pg_temp.ok(:'k6'::boolean and pg_temp.k_ev('2026-10-20', 'transfer') is null
+              and pg_temp.k_ev('2026-10-21', 'transfer') = 'transferred:-:2@18:00' and pg_temp.k_stock() = '2/4',
+                  '25 no transfer is invented for a day already past the cursor; the next 18:00 transfer runs');
+
+-- a WORK-147 Dinner that already moved the day's containers still blocks an equal-time transfer
+select pg_temp.reset_k(2, 4, :k_defaults, '2026-10-22 17:59');
+insert into dog_log.meal_events (owner_id, meal_date, slot, outcome, source_container, freezer_to_fridge_count, slot_at, origin)
+values (:K, '2026-10-22', 'dinner', 'fed', 'fridge', 2, timestamptz '2026-10-22 18:00 Australia/Melbourne', 'server');
+select pg_temp.k_run('2026-10-22 18:01') \g /dev/null
+select pg_temp.ok(pg_temp.k_ev('2026-10-22', 'transfer') is null and pg_temp.k_stock() = '2/4',
+                  '25 a WORK-147 Dinner transfer is never repeated by the equal-time transfer');
 
 select 'ALL DOG_LOG SQL TESTS PASSED';
 rollback;

@@ -1,9 +1,10 @@
 # =============================================================================
 # Windows PowerShell equivalent of run_local.sh: disposable local test run for the
-# Dog Log base sync schema, WORK-147 evening transfer and WORK-148 configurable
-# Food Settings. Creates a throwaway PostgreSQL cluster (TCP on 127.0.0.1 only),
-# loads the local Supabase stub, applies the migrations, runs the SQL suite, the
-# two-session concurrency tests and the rollback tests, then deletes the cluster.
+# Dog Log base sync schema, WORK-147 evening transfer, WORK-148 configurable
+# Food Settings and the WORK-287 equal-time transfer fix. Creates a throwaway
+# PostgreSQL cluster (TCP on 127.0.0.1 only), loads the local Supabase stub,
+# applies the migrations, runs the SQL suite, the two-session concurrency tests
+# and the rollback tests, then deletes the cluster.
 # It never connects to Supabase DEV or PROD.
 #
 #   $env:PG_BINDIR = 'C:\path\to\pgsql\bin'   # PostgreSQL 15+ (initdb, pg_ctl, psql)
@@ -15,6 +16,8 @@ $Supa = (Resolve-Path (Join-Path $Here '..\..')).Path
 $Base      = Join-Path $Supa 'migrations\20260924225253_dog_log_create_sync_schema.sql'
 $W147      = Join-Path $Supa 'migrations\20260926005200_dog_log_add_evening_freezer_transfer.sql'
 $W148      = Join-Path $Supa 'migrations\20260926130000_dog_log_configurable_food_schedule.sql'
+$W287      = Join-Path $Supa 'migrations\20261031213557_dog_log_fix_equal_time_transfer.sql'
+$W287Rb    = Join-Path $Supa 'rollbacks\20261031213557_dog_log_fix_equal_time_transfer.rollback.sql'
 $W148Rb    = Join-Path $Supa 'rollbacks\20260926130000_dog_log_configurable_food_schedule.rollback.sql'
 $W147Rb    = Join-Path $Supa 'rollbacks\20260926005200_dog_log_add_evening_freezer_transfer.rollback.sql'
 $BaseRb    = Join-Path $Supa 'rollbacks\20260924225253_dog_log_create_sync_schema.rollback.sql'
@@ -51,13 +54,14 @@ try {
   & (Join-Path $Bin 'initdb.exe') -D "$Work\data" -U postgres --auth=trust -E UTF8 | Out-Null
   # Start-Process, not a pipeline: the server inherits pg_ctl's handles and would keep a pipe open forever.
   $p = Start-Process -FilePath (Join-Path $Bin 'pg_ctl.exe') -ArgumentList @('-D', "`"$Work\data`"", '-o', "`"-p $Port -c listen_addresses=127.0.0.1`"", '-l', "`"$Work\log`"", '-w', 'start') -NoNewWindow -PassThru
+  $null = $p.Handle  # Windows PowerShell 5.1 reports ExitCode as $null unless the handle is cached before the exit
   $p.WaitForExit()   # not -Wait: in Windows PowerShell that also waits for the (long-lived) server process
   if ($p.ExitCode -ne 0) { Fail 'pg_ctl start' }
 
   Write-Host '== install (clean database)'
   Psql @('-f', (Join-Path $Here 'supabase_stub.sql')) | Out-Null
-  foreach ($m in $Base, $W147, $W148) { Psql @('--single-transaction', '-f', $m) | Out-Null }
-  Pass 'base + WORK-147 + WORK-148 migrations applied to a clean database'
+  foreach ($m in $Base, $W147, $W148, $W287) { Psql @('--single-transaction', '-f', $m) | Out-Null }
+  Pass 'base + WORK-147 + WORK-148 + WORK-287 migrations applied to a clean database'
 
   Write-Host '== SQL suite'
   $out = Psql @('-f', (Join-Path $Supa 'tests\dog_log_sync.sql')) -AllowFail
@@ -83,7 +87,11 @@ try {
   if ([int]$fridge -ne 5 - [math]::Min([int]$expected, 5)) { Fail "concurrent meals: fridge $fridge" }
   if ($r1 -ne $r2) { Fail "concurrent meals: sessions returned revisions $r1 / $r2" }
   if ($devices -ne 'desktop') { Fail "concurrent meals: processed by '$devices'" }
-  Pass "concurrent syncs: $events meal events, one deduction each (fridge 5 -> $fridge); second session saw them as already processed"
+  # WORK-287: the default 18:00 transfer shares Dinner's time and runs exactly once per due day.
+  $expectedT = Val "select count(*) from generate_series(((now() - interval '31 hours') at time zone 'Australia/Melbourne')::date, (now() at time zone 'Australia/Melbourne')::date, interval '1 day') d where (d::date + time '18:00') at time zone 'Australia/Melbourne' > (select meal_tracking_since from dog_log.state where owner_id = '$C') and (d::date + time '18:00') at time zone 'Australia/Melbourne' <= now()"
+  $transfers = Val "select count(*) from dog_log.meal_events where owner_id = '$C' and origin = 'server' and slot = 'transfer'"
+  if ([int]$expectedT -lt 1 -or $transfers -ne $expectedT) { Fail "concurrent transfers: $transfers events, expected $expectedT" }
+  Pass "concurrent syncs: $events meal events and $transfers equal-time transfer(s), one deduction each (fridge 5 -> $fridge); second session saw them as already processed"
 
   Write-Host '== concurrency: the same mutation retried from two tabs at once'
   $M = '44444444-4444-4444-8444-444444444444'
@@ -108,9 +116,27 @@ try {
   if ((Val "select (doc #>> '{stock,fridge}')::int from dog_log.state where owner_id = '$S'") -ne '9') { Fail 'seed race overwrote the first seed' }
   Pass 'seed race: first seeded, second got cloud-exists, nothing overwritten'
 
-  Write-Host '== WORK-148 rollback'
+  Write-Host '== WORK-287 rollback'
+  $rows = Val 'select count(*) from dog_log.state'
+  $events = Val 'select count(*) from dog_log.meal_events'
+  $transfers = Val "select count(*) from dog_log.meal_events where slot = 'transfer'"
+  if ([int]$transfers -lt 1) { Fail 'no transfer rows to preserve across the WORK-287 rollback' }
+  Psql @('-f', $W287Rb) | Out-Null
+  if ((Val 'select count(*) from dog_log.state') -ne $rows -or (Val 'select count(*) from dog_log.meal_events') -ne $events) { Fail 'WORK-287 rollback changed rows' }
+  if ((Val "select count(*) from dog_log.meal_events where slot = 'transfer'") -ne $transfers) { Fail 'WORK-287 rollback lost transfer rows' }
+  if ((Val "select position('v_from' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) = 0 and position('fridgeTransferTime' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) > 0") -ne 't') { Fail 'WORK-287 rollback did not restore the WORK-148 meal function' }
+  if ((Val "select has_function_privilege('authenticated', 'dog_log.sync(jsonb,text,integer)', 'execute') and not has_function_privilege('authenticated', 'dog_log._process_due_meals(uuid,timestamptz,text)', 'execute')") -ne 't') { Fail 'WORK-287 rollback changed privileges' }
+  $syncAfter = AsUserJob $C "select dog_log.sync('[]'::jsonb, 'after-w287-rollback', 1) ->> 'status';"
+  if ((LastLine $syncAfter) -ne 'ok') { Fail 'sync fails after WORK-287 rollback' }
+  Pass 'WORK-287 rollback restores the WORK-148 meal function, keeps every row and privileges; sync still works'
+  Psql @('--single-transaction', '-f', $W287) | Out-Null
+  if ((Val "select position('v_from' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) > 0") -ne 't') { Fail 'WORK-287 did not reapply' }
+  Pass 'WORK-287 migration re-applies cleanly'
+
+  Write-Host '== WORK-148 rollback (after rolling WORK-287 back)'
   $rows = Val 'select count(*) from dog_log.state'
   $transfers = Val "select count(*) from dog_log.meal_events where slot = 'transfer'"
+  Psql @('-f', $W287Rb) | Out-Null
   Psql @('-f', $W148Rb) | Out-Null
   if ((Val 'select count(*) from dog_log.state') -ne $rows) { Fail 'WORK-148 rollback changed cloud rows' }
   if ((Val "select count(*) from dog_log.meal_events where slot = 'transfer'") -ne $transfers) { Fail 'WORK-148 rollback lost transfer rows' }
@@ -123,15 +149,17 @@ try {
   Pass 'WORK-148 rollback restores the WORK-147 functions, keeps rows, transfer ledger and privileges; sync still works'
   Psql @('--single-transaction', '-f', $W148) | Out-Null
   if ((Val "select to_regprocedure('dog_log._setting(jsonb,text)') is not null and position('fridgeTransferTime' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) > 0") -ne 't') { Fail 'WORK-148 did not reapply' }
-  Pass 'WORK-148 migration re-applies cleanly'
+  Psql @('--single-transaction', '-f', $W287) | Out-Null
+  if ((Val "select position('v_from' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure)) > 0") -ne 't') { Fail 'WORK-287 did not reapply over WORK-148' }
+  Pass 'WORK-148 and WORK-287 migrations re-apply cleanly'
 
-  Write-Host '== WORK-147 rollback (after rolling WORK-148 back)'
+  Write-Host '== WORK-147 rollback (after rolling WORK-287 and WORK-148 back)'
+  Psql @('-f', $W287Rb) | Out-Null
   Psql @('-f', $W148Rb) | Out-Null
   Psql @('-f', $W147Rb) | Out-Null
   if ((Val "select position('freezer-to-fridge transfer' in pg_get_functiondef('dog_log._process_due_meals(uuid,timestamptz,text)'::regprocedure))") -ne '0') { Fail 'WORK-147 rollback did not restore prior meal function' }
-  Psql @('--single-transaction', '-f', $W147) | Out-Null
-  Psql @('--single-transaction', '-f', $W148) | Out-Null
-  Pass 'WORK-147 rollback still applies beneath WORK-148; both re-apply cleanly'
+  foreach ($m in $W147, $W148, $W287) { Psql @('--single-transaction', '-f', $m) | Out-Null }
+  Pass 'WORK-147 rollback still applies beneath WORK-148 and WORK-287; all re-apply cleanly'
 
   Write-Host '== base rollback'
   Psql @('-f', $BaseRb) -AllowFail | Out-Null
@@ -141,8 +169,8 @@ try {
   Psql @('-c', 'delete from dog_log.state') | Out-Null
   Psql @('-f', $BaseRb) | Out-Null
   if (Val "select 1 from pg_namespace where nspname = 'dog_log'") { Fail 'schema still present after base rollback' }
-  foreach ($m in $Base, $W147, $W148) { Psql @('--single-transaction', '-f', $m) | Out-Null }
-  Pass 'base + WORK-147 + WORK-148 migrations re-apply cleanly after rollback'
+  foreach ($m in $Base, $W147, $W148, $W287) { Psql @('--single-transaction', '-f', $m) | Out-Null }
+  Pass 'base + WORK-147 + WORK-148 + WORK-287 migrations re-apply cleanly after rollback'
 
   Write-Host 'ALL LOCAL DOG_LOG DATABASE TESTS PASSED'
 }
