@@ -21,6 +21,16 @@ npm ci                     # @playwright/test 1.56.1, pg
 npx playwright test
 ```
 
+## Calendar bridge suite (WORK-282)
+
+`calendar/` runs local-mode Dog Log against `lib/calendar-bridge.js`, a stand-in for the google-calendar Apps Script bridge that answers the same CORS-readable JSON as the deployed web app. It needs no PostgreSQL and never contacts Google:
+
+```sh
+npm run test:calendar      # or: npx playwright test -c playwright.calendar.config.js
+```
+
+It covers verified success, unreadable or unconfirmed replies, terminal errors, 5xx and timeout retries with backoff, offline recovery, reload with a pending retry, changes made mid-write, clear, pairing, a second device, two tabs and token redaction. The main suite uses the same emulator for its calendar traffic.
+
 The package lives here, not at the repository root, so Vercel's static deployment is unaffected.
 
 ## Vendored library

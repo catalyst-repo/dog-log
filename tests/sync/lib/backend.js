@@ -6,6 +6,7 @@
 // Every other request outside the app origin is aborted, so a test can never reach Supabase DEV or PROD.
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const { CalendarBridge } = require('./calendar-bridge');
 
 const PROJECT = 'https://wgcqzamuspuqpedqasbc.supabase.co';
 const SECRET = 'local-emulator-only-secret';
@@ -23,6 +24,7 @@ class Backend {
   reset() {
     this.calls = [];          // every request that reached the emulator
     this.calendarPosts = [];  // Apps Script bridge posts
+    this.calendar = new CalendarBridge({ open: true }); // answers like the deployed bridge, for any device token
     this.down = false;        // true: every Supabase request fails like a dropped network
     this.dropResponses = 0;   // >0: run the RPC and commit, then lose the response (lost ack)
     this.rpcDelayMs = 0;
@@ -75,7 +77,7 @@ class Backend {
     await context.route(() => true, route => {
       const u = route.request().url();
       if (u.startsWith(appUrl) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
-      if (u.startsWith('https://script.google.com/')) { this.calendarPosts.push(route.request().postData()); return route.fulfill({ status: 200, body: '' }); }
+      if (u.startsWith('https://script.google.com/')) { this.calendarPosts.push(route.request().postData()); return this.calendar.handle(route); }
       return route.abort('blockedbyclient');
     });
     await context.route(`${PROJECT}/**`, route => this.handle(route, ctl));
