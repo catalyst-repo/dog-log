@@ -3,7 +3,8 @@
   "private": true,
   "description": "WORK-136 PR-B client sync tests. Disposable local PostgreSQL + a local Supabase emulator; never contacts Supabase DEV or PROD.",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:calendar": "playwright test -c playwright.calendar.config.js"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1",
