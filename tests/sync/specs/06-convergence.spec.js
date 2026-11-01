@@ -58,14 +58,31 @@ test('21 scheduled meals are processed once by the server and every device shows
   await a.page.evaluate(() => window.dispatchEvent(new Event('online')));
   await expect.poll(async () => backend.count('meal_events', a.owner)).toBeGreaterThanOrEqual(3);
   await waitSynced(a.page);
-  const events = (await backend.pool.query("select slot, outcome, source_container, processed_by_device from dog_log.meal_events where owner_id = $1 and origin = 'server' order by slot_at", [a.owner])).rows;
+  // Processing order: slot time, and at an equal time Dinner before the transfer (WORK-148).
+  const events = (await backend.pool.query("select meal_date, slot, outcome, source_container, freezer_to_fridge_count, processed_by_device from dog_log.meal_events where owner_id = $1 and origin = 'server' order by slot_at, slot = 'transfer'", [a.owner])).rows;
   const meals = events.filter(e => e.slot !== 'transfer');
   const transfers = events.filter(e => e.slot === 'transfer');
   const fed = meals.filter(e => e.outcome === 'fed').length;
   expect(meals.length).toBeGreaterThanOrEqual(3);
   expect(meals.length).toBeLessThanOrEqual(5);
   expect(transfers.length).toBeGreaterThanOrEqual(1);
-  expect(meals.map(e => e.source_container).filter(Boolean)).toEqual(meals.filter(e => e.outcome === 'fed').map((e, i) => (i < 3 ? 'fridge' : 'freezer')));
+  // Dinner and the transfer both default to 18:00, so every processed Dinner day has its transfer too. On the current
+  // server this fails: _process_due_meals skips an equal-time transfer (WORK-287).
+  expect(transfers.filter(t => t.outcome === 'transferred').map(t => t.meal_date)).toEqual(meals.filter(e => e.slot === 'dinner' && e.outcome !== 'before-tracking').map(e => e.meal_date));
+  // Replay the server's own events in that order: a fed meal takes Fridge first and Freezer only when Fridge is empty, and
+  // a transfer moves min(Freezer, 2) into Fridge, so the transfers decide which container later meals come from.
+  let fridge = 3, freezer = 2;
+  const sources = [];
+  for (const e of events) {
+    if (e.slot === 'transfer' && e.outcome === 'transferred') {
+      expect(e.freezer_to_fridge_count).toBe(Math.min(freezer, 2));
+      freezer -= e.freezer_to_fridge_count; fridge += e.freezer_to_fridge_count;
+    } else if (e.slot !== 'transfer' && e.outcome === 'fed') {
+      sources.push(fridge > 0 ? 'fridge' : 'freezer');
+      if (fridge > 0) fridge--; else freezer--;
+    }
+  }
+  expect(meals.map(e => e.source_container).filter(Boolean)).toEqual(sources);
   const row = await backend.state(a.owner);
   expect(row.doc.stock.fridge + row.doc.stock.freezer).toBe(5 - fed);
   await expect(a.page.locator('#fridgeVal')).toHaveValue(String(row.doc.stock.fridge));

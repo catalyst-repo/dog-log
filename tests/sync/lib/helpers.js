@@ -1,10 +1,56 @@
 // Shared fixtures: one emulated backend per test, and "devices" (browser contexts) with seeded localStorage.
+const fs = require('fs');
+const path = require('path');
 const base = require('@playwright/test');
 const { Backend } = require('./backend');
 
 const APP = () => process.env.DOGLOG_APP_URL;
 const EMAIL = 'household@dog-log.test';
 const PASSWORD = 'correct horse battery staple';
+
+// The six WORK-148 schedule settings the server's _norm_doc materialises into every cloud doc.settings, with their
+// migration defaults (supabase/migrations/20260926130000_dog_log_configurable_food_schedule.sql). Pinned here, not read
+// from index.html, so a drift in either the client or the server is caught.
+const SCHEDULE_DEFAULTS = Object.freeze({ breakfastTime: '09:00', dinnerTime: '18:00', fridgeTransferTime: '18:00', fridgeTransferCount: 2, maxFreezerContainers: 70, maxFridgeContainers: null });
+// The exact cloud doc.settings for an owner who set only these fields (schedule fields left at their defaults).
+const cloudSettings = (own = {}) => ({ ...own, ...SCHEDULE_DEFAULTS });
+
+// The app's built-in calendar bridge: the Production Apps Script web app (index.html CALENDAR_ENDPOINT). The tests only
+// ever reach it through the emulator (lib/backend.js, lib/network-guard.js).
+const CALENDAR_ENDPOINT = fs.readFileSync(path.join(__dirname, '../../../index.html'), 'utf8').match(/const CALENDAR_ENDPOINT='([^']+)'/)[1];
+
+// WORK-286 startup contract (operator decision A, 2026-11-01). Startup is not data-unchanged. It first takes the
+// verbatim pre-sync backup (R16), then persists normalised local data and connects the calendar bridge:
+//   - stock.neckPackets is materialised from the legacy neckBags, which is kept;
+//   - tracking.transferLog is initialised (WORK-147);
+//   - an empty calendar endpoint becomes CALENDAR_ENDPOINT, a missing pairing token is generated, and the device pairs
+//     and syncs, recording want/verified/retry (WORK-282).
+// The specs pin this as the current behaviour, not as approved behaviour: the non-verbatim pre-adopt backup and the
+// automatic Apps Script contact of a signed-out device are follow-up concerns recorded on WORK-286.
+// startupDoc(input) is the stored dog_food_stock_v2 once startup has settled against the always-accepting emulator.
+const ISO = base.expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+function startupDoc(input) {
+  const c = input.calendar || {};
+  const want = { rev: 1, key: base.expect.any(String), payload: { action: 'sync', date: base.expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), preparedContainers: base.expect.any(Number), containersPerDay: base.expect.any(Number), finalMeal: base.expect.any(String) } };
+  return {
+    ...input,
+    stock: { ...input.stock, neckPackets: input.stock.neckPackets != null ? input.stock.neckPackets : input.stock.neckBags },
+    tracking: { ...input.tracking, transferLog: {} },
+    calendar: {
+      ...c,
+      endpoint: c.endpoint || CALENDAR_ENDPOINT,
+      token: c.token || base.expect.stringMatching(/^[0-9a-f]{64}$/),
+      paired: true, lastSync: ISO, lastError: null, want,
+      verified: { rev: 1, key: base.expect.any(String), at: ISO, ids: { oneWeek: 'evt-oneWeek', oneDay: 'evt-oneDay', runout: 'evt-runout' } },
+      retry: null,
+    },
+  };
+}
+// Startup's calendar connection has finished: the desired state is verified and nothing is in flight, so local data
+// stays put until the next recheck (6 h) or a change.
+async function calendarSettled(page) {
+  await base.expect.poll(() => page.evaluate(() => calInSync() && !calFlight && !calSending), { timeout: 15000 }).toBe(true);
+}
 
 // WORK-135-shape local data, including the legacy neckBags field.
 function fixture(overrides = {}) {
@@ -84,4 +130,4 @@ async function seededDevice({ device, backend }, localData = fixture(), opts = {
   return { ...d, owner };
 }
 
-module.exports = { test, expect: base.expect, APP, EMAIL, PASSWORD, fixture, g, signIn, waitSynced, raw, outboxOps, seededDevice, setOffline };
+module.exports = { test, expect: base.expect, APP, EMAIL, PASSWORD, fixture, SCHEDULE_DEFAULTS, cloudSettings, CALENDAR_ENDPOINT, startupDoc, calendarSettled, g, signIn, waitSynced, raw, outboxOps, seededDevice, setOffline };

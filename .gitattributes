@@ -1,0 +1,3 @@
+# Vendored third-party files are integrity-pinned (tests/sync/specs/08-secrets.spec.js, tests/sync/README.md):
+# their bytes must never be line-ending converted on checkout or `git archive` (e.g. core.autocrlf=true on Windows).
+vendor/** -text

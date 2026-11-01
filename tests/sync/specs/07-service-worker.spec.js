@@ -1,7 +1,7 @@
 // Service worker (current CACHE name read from sw.js): API traffic is never cached; v8 -> current keeps local data and the offline shell.
 const fs = require('fs');
 const path = require('path');
-const { test, expect, g, APP, fixture, signIn, waitSynced, raw, EMAIL, PASSWORD } = require('../lib/helpers');
+const { test, expect, g, APP, fixture, startupDoc, calendarSettled, signIn, waitSynced, raw, EMAIL, PASSWORD } = require('../lib/helpers');
 const CURRENT = fs.readFileSync(path.join(__dirname, '../../../sw.js'), 'utf8').match(/const CACHE = '([^']+)'/)[1];
 
 async function controlled(page) {
@@ -39,20 +39,29 @@ test('25 the service worker never caches or answers Supabase, Auth, RPC or Apps 
   expect(urls).toEqual(expect.arrayContaining([`${APP()}/vendor/supabase-js-2.116.0.min.js`, `${APP()}/index.html`]));
 });
 
-test('26 upgrading from the v8 service worker keeps localStorage and the offline shell; icons stay network-only', async ({ device }) => {
+test('26 upgrading from the v8 service worker keeps localStorage and the offline shell; icons stay network-only', async ({ device, backend }) => {
   await fetch(`${APP()}/__test__/sw?version=v8`);
   try {
-    const rawIn = JSON.stringify(fixture({ calendar: { endpoint: '', token: '', paired: false, lastSync: null, lastError: null } }));
+    const input = fixture({ calendar: { endpoint: '', token: '', paired: false, lastSync: null, lastError: null } });
+    const rawIn = JSON.stringify(input);
     const { page, context } = await device({ raw: rawIn, serviceWorkers: 'allow' });
     await controlled(page);
     await expect.poll(async () => (await cacheState(page)).keys).toEqual(['dog-log-v8']);
+    // Startup has normalised local data and connected the calendar (lib/helpers.js startupDoc). The v8 worker forwards
+    // the controlled page's calendar sync itself; it must reach the emulator, never the real Apps Script
+    // (lib/network-guard.js).
+    await calendarSettled(page);
+    expect(backend.calendar.posts.map(p => p.action)).toEqual(['pair', 'sync']);
+    expect(JSON.parse(await raw(page))).toEqual(startupDoc(input));
+    expect((await g(page, () => backups())).find(x => x.reason === 'pre-sync').raw).toBe(rawIn);
     const storageBefore = await page.evaluate(() => JSON.stringify(Object.entries(localStorage).sort()));
+    const rawBefore = await raw(page);
     await fetch(`${APP()}/__test__/sw?version=v9`);
     await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
     await expect.poll(async () => (await cacheState(page)).keys, { timeout: 15000 }).toEqual([CURRENT]);
     await page.reload();
     expect(await page.evaluate(() => JSON.stringify(Object.entries(localStorage).sort()))).toBe(storageBefore);
-    expect(await raw(page)).toBe(rawIn);
+    expect(await raw(page)).toBe(rawBefore);
     // Icons are never answered by the service worker; cached assets are.
     const icon = page.waitForResponse(r => r.url().includes('/icons/icon-192.png'));
     await page.evaluate(() => fetch('/icons/icon-192.png?v=2'));

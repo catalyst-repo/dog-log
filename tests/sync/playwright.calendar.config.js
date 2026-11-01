@@ -1,6 +1,7 @@
 // WORK-282 calendar bridge tests. Local-mode Dog Log against the local bridge emulator: no database, no Supabase,
 // no Google. Runs without PostgreSQL: `npx playwright test -c playwright.calendar.config.js`.
 const { defineConfig } = require('@playwright/test');
+const { launchOptions } = require('./lib/network-guard');
 
 module.exports = defineConfig({
   testDir: './calendar',
@@ -12,7 +13,7 @@ module.exports = defineConfig({
   reporter: [['list']],
   use: {
     browserName: 'chromium',
-    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {},
+    launchOptions,
     timezoneId: 'Australia/Melbourne',
     locale: 'en-AU',
     actionTimeout: 10000,

@@ -1,28 +1,40 @@
-// Upgrade safety and unchanged local-only behaviour (no account, never signed in).
-const { test, expect, fixture, g, raw } = require('../lib/helpers');
+// Upgrade safety and unchanged local-only behaviour (no account, never signed in). The startup contract these specs pin,
+// and why it is recorded rather than approved, is described at startupDoc in lib/helpers.js.
+const { test, expect, fixture, CALENDAR_ENDPOINT, startupDoc, calendarSettled, g, raw } = require('../lib/helpers');
 
-// Unpaired calendar: a paired one legitimately records lastSync at startup (unchanged v8 behaviour).
+// A never-connected calendar: startup fills in the built-in endpoint and a new token, then pairs and syncs it.
 const unpaired = () => fixture({ calendar: { endpoint: '', token: '', paired: false, lastSync: null, lastError: null } });
 
-test('01 existing dog_food_stock_v2 survives the upgrade byte-for-byte, with a verified pre-sync backup', async ({ device }) => {
-  const rawIn = JSON.stringify(unpaired());
+test('01 existing dog_food_stock_v2 is backed up verbatim before startup normalises it, and its data survives the upgrade', async ({ device, backend }) => {
+  const input = unpaired();
+  const rawIn = JSON.stringify(input);
   const { page } = await device({ raw: rawIn });
-  expect(await raw(page)).toBe(rawIn);
+  await calendarSettled(page);
   const b = await g(page, () => backups());
   expect(b.filter(x => x.reason === 'pre-sync')).toHaveLength(1);
-  expect(b[0].raw).toBe(rawIn);
+  expect(b[0].raw).toBe(rawIn); // R16: byte-for-byte, taken before any startup write
+  expect(JSON.parse(await raw(page))).toEqual(startupDoc(input));
   await expect(page.locator('#fridgeVal')).toHaveValue('5');
   await expect(page.locator('#freezerVal')).toHaveValue('12');
   await expect(page.locator('#necksVal')).toHaveValue('3'); // legacy neckBags still maps to Chicken-neck packets
   await expect(page.locator('#syncBadge')).toHaveText('Saved locally');
+  expect(backend.calls).toHaveLength(0);
 });
 
-test('02 signed-out startup and ordinary use never alter local data or contact the cloud', async ({ device, backend }) => {
-  const rawIn = JSON.stringify(unpaired());
-  const { page } = await device({ raw: rawIn });
+test('02 signed-out startup never contacts Supabase, and ordinary use leaves the startup-normalised data unchanged', async ({ device, backend }) => {
+  const input = unpaired();
+  const { page } = await device({ raw: JSON.stringify(input) });
+  await calendarSettled(page);
+  const settled = await raw(page);
+  expect(JSON.parse(settled)).toEqual(startupDoc(input));
+  // The only traffic startup sends is the calendar bridge's pair and sync, to the built-in Production endpoint
+  // (answered here by the emulator). That automatic contact is a follow-up concern, not approved behaviour.
+  expect(await g(page, () => state.calendar.endpoint)).toBe(CALENDAR_ENDPOINT);
+  expect(backend.calendar.posts.map(p => p.action)).toEqual(['pair', 'sync']);
   await g(page, () => { ['food', 'prep', 'plan', 'history', 'settings', 'food'].forEach(showView); tick(); render(); window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); });
   await page.waitForTimeout(500);
-  expect(await raw(page)).toBe(rawIn);
+  expect(await raw(page)).toBe(settled);
+  expect(backend.calendar.posts).toHaveLength(2); // ordinary use re-sends nothing
   expect(backend.calls).toHaveLength(0);
   expect(await g(page, () => [meta.mode, typeof window.supabase, localStorage.getItem('dog_log_outbox_v1')])).toEqual(['local', 'undefined', null]);
 });
