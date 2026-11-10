@@ -3,3 +3,6 @@ tests/
 # through a later, separately approved increment (Preview first; Production needs explicit clearance).
 neon/
 server/
+# WORK-274: the Catalyst App Manifest is internal configuration. It stays in GitHub for governance
+# tooling and is never served.
+.catalyst/
