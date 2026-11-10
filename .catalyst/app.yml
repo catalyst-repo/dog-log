@@ -2,8 +2,9 @@
 # Answers "What am I?". Cross-app relationships live in fleet/FLEET_REGISTRY.yml.
 # Irrelevant fields are omitted rather than carrying filler (CORE_RULES.md section 13.1).
 # Hosting, runtime and lifecycle facts are deliberately undeclared: they were not
-# evidenced during GOV-442 and are not inferred here. The backend is declared below
-# (WORK-287), from the shared Supabase projects' own migration history.
+# evidenced during GOV-442 and are not inferred here. The backend is declared below:
+# the legacy Supabase source from its own migration history (WORK-287), and the owned
+# Neon boundary from the operator's Neon Console (WORK-274).
 
 schema: catalyst/app@1
 
@@ -23,14 +24,34 @@ branches:
     request requires explicit operator approval for that specific pull request before
     it is merged.
 
-# The backend boundary (data.application-backend, schema catalyst/backend@1). Dog Log
-# still runs on the legacy shared Supabase projects, in its own `dog_log` schema; that
-# source is authoritative. Production data lives only in prod. Dog Log keeps no schema
-# in dev (WORK-136): dev is used only for a temporary validation that is rolled back
-# afterwards. The move to an owned backend is WORK-274.
+# The backend boundary (data.application-backend, schema catalyst/backend@1).
+#
+# Dog Log is migrating (WORK-274) to its own isolated Neon project. The legacy shared
+# Supabase projects, in Dog Log's own `dog_log` schema, stay the one authoritative
+# Production backend with writes open until a separately cleared cutover changes this
+# declaration. Production data lives only in the legacy prod project. Dog Log keeps no
+# schema in the legacy dev project (WORK-136): it is used only for a temporary validation
+# that is rolled back afterwards.
+#
+# The Neon targets carry the Neon conventions: `main` is the production target and `dev`
+# the persistent development target (synthetic data only). Their ids come from the
+# operator's Neon Console (WORK-274 comment d76442e2), not from an AI provider read.
+# Declaring them authorises nothing: every Neon mutation still needs
+# governance-v2/scripts/backend-preflight.js preflight against a fresh provider read of
+# its exact target, and anything on `main` also needs explicit Production clearance.
 backend:
   schema: catalyst/backend@1
-  state: legacy-shared
+  state: migrating
+  provider: neon
+  project: proud-leaf-63550349
+  targets:
+    prod:
+      name: main
+      id: br-muddy-smoke-a7tg6nwc
+    dev:
+      name: dev
+      id: br-wispy-cell-a7tpzt7c
+  preview: risk-triggered
   legacy:
     provider: supabase
     projects:
