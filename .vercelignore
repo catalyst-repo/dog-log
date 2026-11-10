@@ -1,1 +1,5 @@
 tests/
+# WORK-274: the Neon schema and server API are not deployed by a merge. They ship to a runtime only
+# through a later, separately approved increment (Preview first; Production needs explicit clearance).
+neon/
+server/

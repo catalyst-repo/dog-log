@@ -1,0 +1,11 @@
+{
+  "name": "dog-log-neon-tests",
+  "private": true,
+  "description": "WORK-274 Neon backend tests. Disposable local PostgreSQL only; never contacts Supabase or Neon.",
+  "scripts": {
+    "test": "node --test --test-concurrency=1"
+  },
+  "devDependencies": {
+    "pg": "8.16.3"
+  }
+}
