@@ -36,11 +36,11 @@ The internal functions are copied verbatim from the live Supabase end-state, and
 Each step below is a separate, governed act (`data.application-backend`):
 
 1. **Backend declaration.**
-   - Declare the Neon boundary in `.catalyst/app.yml` as `migrating`.
-   - Use only project and branch ids verified by a fresh provider read. Supabase remains the legacy, authoritative source.
+   - Declare the Neon boundary in `.catalyst/app.yml` as `migrating`. Supabase remains the legacy, authoritative source.
+   - The project and branch ids come from the operator's Neon Console (WORK-274 comment d76442e2), not from an AI provider read. Declaring them authorises no mutation.
    - Validate the declaration with `backend-preflight.js validate`.
 2. **DEV apply.**
-   - Apply the migration to the `dev` target only, after `backend-preflight.js preflight` passes for exactly that app, project, target and operation.
+   - Apply the migration to the `dev` target only, after `backend-preflight.js preflight` passes for exactly that app, project, target and operation. Preflight needs a fresh provider read of the `dev` branch that matches the declared id.
    - Then verify the applied state from the same target.
 3. **Runtime credential (human ADMIN only).**
    - Create a login role that is a member of `dog_log_api` on `dev`.
