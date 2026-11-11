@@ -42,6 +42,12 @@ Each step below is a separate, governed act (`data.application-backend`):
 2. **DEV apply.**
    - Apply the migration to the `dev` target only, after `backend-preflight.js preflight` passes for exactly that app, project, target and operation. Preflight needs a fresh provider read of the `dev` branch that matches the declared id.
    - Then verify the applied state from the same target.
+   - The two requests are in `preflight/`:
+     - `…dev.preflight.json` is the schema-migration request for change `20261110120000_dog_log_portable_schema` on `dev`.
+     - `…dev.verify-applied.json` checks the same change on the same target afterwards.
+   - As committed, both carry no observation and are refused (`no-observation`). Each file's `$comment` says what the executor fills in and the exact command to run.
+   - Before applying, run verify-applied first. If it already returns `verified`, the change is applied and must not be applied again; a second run of the migration fails at `create schema dog_log` anyway.
+   - **Open before the apply:** verify-applied reads the change id from the `dev` branch's own migration history. This migration does not record itself, and Dog Log has no history table on Neon yet. How the apply records the change on `dev` is a decision still to make, and until then verify-applied can only return `no-applied-history`.
 3. **Runtime credential (human ADMIN only).**
    - Create a login role that is a member of `dog_log_api` on `dev`.
    - Install its connection string as the Vercel **Preview-only** server variable `DOG_LOG_DATABASE_URL`, together with `DOG_LOG_BACKEND_TARGET=dev` and `DOG_LOG_DATABASE_ENDPOINT=<dev endpoint id>`.
@@ -55,3 +61,9 @@ cd tests/neon && npm ci && npm test
 ```
 
 The tests need PostgreSQL 15+ server binaries; set `PG_BINDIR` if they are not found. They create and delete their own temporary cluster, and never contact Supabase or Neon.
+
+`preflight.test.js` checks the `preflight/` requests against the governance `backend-preflight.js` tool. It uses synthetic branch reads, never provider observations. Set `CATALYST_GOVERNANCE_DIR` to a checkout of catalyst-repo/governance to run it; without that, those checks are skipped.
+
+```sh
+cd tests/neon && CATALYST_GOVERNANCE_DIR=/path/to/governance npm test
+```

@@ -1,0 +1,18 @@
+{
+  "$comment": "WORK-274. backend-preflight verify-applied request for the same change on the same dev target. target is the binding an allowing preflight returns for the .dev.preflight.json request. As committed it holds no evidence, so it returns insufficient-evidence. After the apply, the executor sets observed to a fresh describe_branch read of dev, applied to the change ids read from that same branch's migration history, and readAt to the time of that read, then runs: node <governance>/governance-v2/scripts/backend-preflight.js verify-applied <this file> --manifest .catalyst/app.yml",
+  "target": {
+    "app": "dog-log",
+    "provider": "neon",
+    "project": "proud-leaf-63550349",
+    "target": "dev",
+    "targetId": "br-wispy-cell-a7tpzt7c",
+    "role": "dev",
+    "backend": "owned",
+    "operation": "schema-migration",
+    "change": "20261110120000_dog_log_portable_schema"
+  },
+  "change": "20261110120000_dog_log_portable_schema",
+  "observed": null,
+  "applied": null,
+  "readAt": null
+}
