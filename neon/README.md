@@ -42,6 +42,16 @@ Each step below is a separate, governed act (`data.application-backend`):
 2. **DEV apply.**
    - Apply the migration to the `dev` target only, after `backend-preflight.js preflight` passes for exactly that app, project, target and operation. Preflight needs a fresh provider read of the `dev` branch that matches the declared id.
    - Then verify the applied state from the same target.
+   - The two requests are in `preflight/`:
+     - `…dev.preflight.json` is the schema-migration request for change `20261110120000_dog_log_portable_schema` on `dev`.
+     - `…dev.verify-applied.json` checks the same change on the same target afterwards.
+   - As committed, both carry no observation and are refused (`no-observation`). Each file's `$comment` says what the executor fills in and the exact command to run.
+   - **Applied history.** The migration file is one transaction (`begin` … `commit`). Its last act records its change id in the ledger `dog_log_migrations.schema_migrations`, so the schema and the record commit together or not at all.
+     - Apply the file as one script. It needs no `psql --single-transaction`.
+     - The ledger is outside `dog_log`. Only its owner can reach it; neither PUBLIC nor `dog_log_api` has any privilege on it.
+     - verify-applied reads it with the request's `$appliedFrom` query, on the same `dev` branch as the observation. With no ledger, `applied` is `null`.
+   - **Duplicate apply.** Run verify-applied before applying. If it already returns `verified`, the change is applied and must not be applied again. A second run fails anyway: at `create schema dog_log`, or at the ledger's primary key, and nothing changes.
+   - **Rollback.** The pre-adoption rollback deletes the change's ledger row in the same transaction as dropping `dog_log`, and refuses if that row is missing. The ledger itself is kept.
 3. **Runtime credential (human ADMIN only).**
    - Create a login role that is a member of `dog_log_api` on `dev`.
    - Install its connection string as the Vercel **Preview-only** server variable `DOG_LOG_DATABASE_URL`, together with `DOG_LOG_BACKEND_TARGET=dev` and `DOG_LOG_DATABASE_ENDPOINT=<dev endpoint id>`.
@@ -55,3 +65,15 @@ cd tests/neon && npm ci && npm test
 ```
 
 The tests need PostgreSQL 15+ server binaries; set `PG_BINDIR` if they are not found. They create and delete their own temporary cluster, and never contact Supabase or Neon.
+
+`preflight.test.js` checks the `preflight/` requests against the governance `backend-preflight.js` tool, using synthetic branch reads, never provider observations. It also checks the applied-history ledger on local databases:
+- atomic commit and rollback of the change id with the schema;
+- duplicate prevention;
+- the rollback removing the record;
+- verify-applied over a real ledger read: wrong target, missing history, and no false Production verification.
+
+Set `CATALYST_GOVERNANCE_DIR` to a checkout of catalyst-repo/governance to run the tool checks; without that, they are skipped.
+
+```sh
+cd tests/neon && CATALYST_GOVERNANCE_DIR=/path/to/governance npm test
+```

@@ -1,0 +1,12 @@
+{
+  "$comment": "WORK-274. backend-preflight request for applying the portable schema to the Neon dev target only. It authorises nothing: as committed it has no provider observation, so preflight refuses it with no-observation. Before an approved DEV apply, the executor sets observed to { \"adapter\": \"neon\", \"raw\": <fresh describe_branch read of dev> } and runs: node <governance>/governance-v2/scripts/backend-preflight.js preflight <this file> --manifest .catalyst/app.yml",
+  "operation": "schema-migration",
+  "change": "20261110120000_dog_log_portable_schema",
+  "expected": {
+    "app": "dog-log",
+    "provider": "neon",
+    "project": "proud-leaf-63550349",
+    "target": "dev"
+  },
+  "observed": null
+}

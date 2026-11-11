@@ -83,7 +83,7 @@ function start(port) {
     psqlSql('postgres', 'create database neon');
     for (const f of SUPABASE_FILES) psqlFile('supa', f);
     psqlSql('neon', HOSTILE_DEFAULTS);
-    psqlFile('neon', NEON_MIGRATION);
+    psqlFile('neon', NEON_MIGRATION, false);
     // The runtime credential's stand-in: a login member of the NOLOGIN group role (no password, local trust only).
     psqlSql('neon', 'create role dog_log_runtime_test login in role dog_log_api');
   } catch (e) {
@@ -92,9 +92,14 @@ function start(port) {
   }
   return {
     host, port, stop,
-    applyNeonMigration: () => psqlFile('neon', NEON_MIGRATION),
-    // The rollback file carries its own begin/commit, so it runs without --single-transaction.
+    // The migration and rollback files each carry their own begin/commit, so both run
+    // without --single-transaction, as they would against Neon.
+    applyNeonMigration: () => psqlFile('neon', NEON_MIGRATION, false),
     applyNeonRollback: () => psqlFile('neon', NEON_ROLLBACK, false),
+    // Any database and file, for tests that start from an empty database.
+    applyFile: (db, file) => psqlFile(db, file, false),
+    sql: (db, sql) => psqlSql(db, sql),
+    hostileDefaults: HOSTILE_DEFAULTS,
     config: (database, user = 'postgres') => ({ host, port, user, database }),
   };
 }

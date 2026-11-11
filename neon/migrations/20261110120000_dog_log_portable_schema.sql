@@ -29,7 +29,15 @@
 -- Never apply to `main` (Production) without explicit Production clearance for
 -- that exact operation. Supabase stays the authoritative Production backend.
 -- Rollback: neon/rollbacks/20261110120000_dog_log_portable_schema.rollback.sql
+--
+-- Applied history: this file is one transaction (begin ... commit). Its last act
+-- records its change id in dog_log_migrations.schema_migrations, so the schema and
+-- that record commit together or not at all. The record's primary key refuses a
+-- second apply. backend-preflight verify-applied reads this table on the same
+-- branch. Apply the file as one script; it needs no psql --single-transaction.
 -- =============================================================================
+
+begin;
 
 -- The runtime group role. NOLOGIN: it carries no password or credential.
 do $$
@@ -1087,3 +1095,27 @@ alter table dog_log.state           enable row level security;
 alter table dog_log.meal_events     enable row level security;
 alter table dog_log.mutations       enable row level security;
 alter table dog_log.state_snapshots enable row level security;
+
+-- -----------------------------------------------------------------------------
+-- Applied history. A minimal ledger that backend-preflight verify-applied reads to
+-- confirm an apply. It lives outside dog_log, so a pre-adoption rollback can drop
+-- dog_log and keep the ledger, less this change's row. Only the owner reads or
+-- writes it; neither PUBLIC nor dog_log_api has any privilege on it.
+-- -----------------------------------------------------------------------------
+create schema if not exists dog_log_migrations;
+comment on schema dog_log_migrations is 'Applied-migration ledger for the Dog Log Neon schema (WORK-274). Written only by migration and rollback files, inside their own transaction.';
+revoke all on schema dog_log_migrations from public;
+
+create table if not exists dog_log_migrations.schema_migrations (
+  version    text        not null,
+  applied_at timestamptz not null default now(),
+  constraint schema_migrations_pkey primary key (version),
+  constraint schema_migrations_version_check check (version ~ '^[0-9]{14}_dog_log_[a-z0-9_]+$')
+);
+revoke all on table dog_log_migrations.schema_migrations from public, dog_log_api;
+
+-- The record commits with everything above, or not at all.
+insert into dog_log_migrations.schema_migrations (version)
+values ('20261110120000_dog_log_portable_schema');
+
+commit;
