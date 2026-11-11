@@ -1,5 +1,6 @@
 {
-  "$comment": "WORK-274. backend-preflight verify-applied request for the same change on the same dev target. target is the binding an allowing preflight returns for the .dev.preflight.json request. As committed it holds no evidence, so it returns insufficient-evidence. After the apply, the executor sets observed to a fresh describe_branch read of dev, applied to the change ids read from that same branch's migration history, and readAt to the time of that read, then runs: node <governance>/governance-v2/scripts/backend-preflight.js verify-applied <this file> --manifest .catalyst/app.yml",
+  "$comment": "WORK-274. backend-preflight verify-applied request for the same change on the same dev target. target is the binding an allowing preflight returns for the .dev.preflight.json request. As committed it holds no evidence, so it returns insufficient-evidence. After the apply, the executor sets observed to a fresh describe_branch read of dev; applied to the versions returned by $appliedFrom, run on that same dev branch (null if dog_log_migrations.schema_migrations does not exist); and readAt to the time of that read. Then it runs: node <governance>/governance-v2/scripts/backend-preflight.js verify-applied <this file> --manifest .catalyst/app.yml. Run it before an apply too: verified there means the change is already applied and must not be applied again.",
+  "$appliedFrom": "select version from dog_log_migrations.schema_migrations order by version",
   "target": {
     "app": "dog-log",
     "provider": "neon",
